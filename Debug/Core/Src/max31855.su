@@ -1,0 +1,2 @@
+../Core/Src/max31855.c:6:19:MAX31855_ReadRaw	24	static
+../Core/Src/max31855.c:31:19:MAX31855_ReadTemperature	32	static

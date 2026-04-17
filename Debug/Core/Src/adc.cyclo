@@ -1,0 +1,5 @@
+../Core/Src/adc.c:16:10:ADC_GetIgniter1Filtered	1
+../Core/Src/adc.c:17:10:ADC_GetIgniter2Filtered	1
+../Core/Src/adc.c:18:10:ADC_GetU24Filtered	1
+../Core/Src/adc.c:20:17:SmaProcess	3
+../Core/Src/adc.c:42:6:HAL_ADC_ConvCpltCallback	3
