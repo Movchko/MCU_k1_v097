@@ -16,7 +16,8 @@ void App_CanOnRx(uint8_t bus);      /* 1 = CAN1, 2 = CAN2 */
 void App_UpdateCanActivity(void);
 extern volatile uint8_t CAN1_Active;
 extern volatile uint8_t CAN2_Active;
-
+void FDCAN_StartAll(void);
+void App_CanTxProcess(void);
 #ifdef __cplusplus
 }
 #endif

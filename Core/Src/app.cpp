@@ -7,22 +7,22 @@ extern "C" {
 #include "device_config.h"
 #include "device_igniter.hpp"
 #include "device_lswitch.hpp"
-#include "mku_cfg_flash.h"
+
 #include "max31855.h"
 #include "stm32h5xx_hal.h"
-#include "stm32h5xx_hal_flash.h"
-#include "stm32h5xx_hal_flash_ex.h"
+
 
 #include <string.h>
 
 #include "main.h"
+#include "mku_cfg_flash.h"
 
 #ifndef DEVICE_MCU_K1
 #define DEVICE_MCU_K1 20
 #endif
 
-#define FLASH_CFG_SECTOR     (31u)
-#define MKU_CFG_HEADER_MAGIC 0x4D4B5543u
+
+
 #define MAX_TEMP_SMA_SIZE    10u
 #define MAX31855_SWITCH_BLANK_MS 100u
 #define MAX_TC_STEP_LIMIT_C  40
@@ -35,8 +35,8 @@ extern "C" {
 
 MAX31855_Data t_couple;
 
-static MKUCfg g_cfg;
-static MKUCfg g_saved_cfg;
+MKUCfg g_cfg;
+MKUCfg g_saved_cfg;
 
 /* 1: DPT, 2: Igniter1, 3: Igniter2 */
 static VDeviceDPT g_dpt(1);
@@ -46,20 +46,7 @@ static VDeviceIgniter g_igniter2(3);
 static uint32_t g_extinguish_deadline_ms[NUM_DEV_IN_MCU];
 static uint8_t  g_extinguish_armed[NUM_DEV_IN_MCU];
 
-#define APP_CAN_RX_RING_SIZE  256
-typedef struct {
-    uint32_t id;
-    uint8_t  data[8];
-    uint8_t  bus;
-} AppCanRxEntry;
-static AppCanRxEntry can_rx_ring[APP_CAN_RX_RING_SIZE];
-static volatile uint8_t can_rx_head = 0;
-static volatile uint8_t can_rx_tail = 0;
 
-volatile uint8_t CAN1_Active = 0;
-volatile uint8_t CAN2_Active = 0;
-static uint32_t can1_last_rx_tick = 0;
-static uint32_t can2_last_rx_tick = 0;
 
 static uint8_t  g_fire_retry_active = 0;
 static uint32_t g_fire_last_send_ms = 0;
@@ -77,6 +64,9 @@ static uint8_t  g_tc_prev_valid = 0u;
 static uint8_t  g_tc_valid_streak = 0u;
 static int16_t	g_tc_prev_val = 0;
 extern bool isListener;
+
+static uint8_t ResetDelayms = 100;
+static uint8_t isReset = 0;
 
 static int16_t Median3(int16_t a, int16_t b, int16_t c)
 {
@@ -170,19 +160,6 @@ void MAXReadProcess() {
         } else
         	g_dpt.SetMaxStatus(g_tc_prev_val, fault_mask, ti);
     }
-}
-
-void ListenerCommandCB(uint32_t MsgID, uint8_t *MsgData) {
-	/*can_ext_id_t id;
-	id.ID = MsgID;
-	if(id.field.d_type == DEVICE_PPKY_TYPE) {
-		uint8_t Command = MsgData[0];
-		if(Command >= ServiceCmd_Fire_SetStatusFire && Command <= ServiceCmd_Fire_StopExtinguishment) {
-			if (Command == ServiceCmd_Fire_ReplyStatusFire) {
-				RcvReplyStatusFire();
-			}
-		}
-	}*/
 }
 
 
@@ -293,6 +270,41 @@ static void VDeviceSetStatus(uint8_t DNum, uint8_t Code, const uint8_t *Paramete
     }
 }
 
+void App_SendStatus() {
+	   uint32_t now = HAL_GetTick();
+    /* cmd=0 heartbeat для ППКУ:
+     * [0..3]  tick (LE)
+     * [4]     CAN flags (используется как can_status_mask в ППКУ)
+     * [5]     измеренное U24: шаг 0.1V (как в статусе ППКУ)
+     * [6]     reserved */
+    uint8_t status_data[7] = {
+        (uint8_t)(now & 0xFFu),
+        (uint8_t)((now >> 8) & 0xFFu),
+        (uint8_t)((now >> 16) & 0xFFu),
+        (uint8_t)((now >> 24) & 0xFFu),
+        (uint8_t)(CAN1_Active | (CAN2_Active << 1)),
+        0u,
+        0u
+    };
+
+    /* U24: вычисляем из ADC-кода канала 11 (internal 24V). */
+
+    const uint32_t VREF_MV = 3300u;
+    const uint32_t ADC_MAX = 4095u;
+    const uint32_t DIV_K   = 11u;
+
+    uint32_t raw_u24 = ADC_GetU24Filtered();
+    uint32_t v_adc_mv = (raw_u24 * VREF_MV) / ADC_MAX;
+    uint32_t u24_mv   = v_adc_mv * DIV_K;          /* пересчёт к 24В */
+    uint32_t code_01v = u24_mv / 100u;             /* 0.1V шаг как у ППКУ */
+    if (code_01v > 255u)
+    	code_01v = 255u;
+
+    status_data[5] = (uint8_t)code_01v;
+
+    SendMessage(0, 0, status_data, SEND_NOW, BUS_CAN12);
+}
+
 void SetHAdr(uint8_t h_adr)
 {
     g_cfg.UId.devId.h_adr = h_adr;
@@ -367,123 +379,14 @@ void DefaultConfig(void)
     ign2_cfg->burn_retry_count     = 0u;
 }
 
-uint32_t GetConfigSize(void)
-{
-    return static_cast<uint32_t>(sizeof(g_cfg));
-}
-
-uint32_t GetConfigWord(uint16_t num)
-{
-    uint32_t byte_index = static_cast<uint32_t>(num) * 4u;
-    uint32_t cfg_size   = GetConfigSize();
-    if (byte_index + 4u > cfg_size) {
-        return 0u;
-    }
-    uint8_t *p = reinterpret_cast<uint8_t *>(&g_cfg);
-    uint32_t word = 0u;
-    word |= (static_cast<uint32_t>(p[byte_index + 0]) << 24);
-    word |= (static_cast<uint32_t>(p[byte_index + 1]) << 16);
-    word |= (static_cast<uint32_t>(p[byte_index + 2]) << 8);
-    word |= (static_cast<uint32_t>(p[byte_index + 3]) << 0);
-    return word;
-}
-
-void SetConfigWord(uint16_t num, uint32_t word)
-{
-    uint32_t byte_index = static_cast<uint32_t>(num) * 4u;
-    uint32_t cfg_size   = GetConfigSize();
-    if (byte_index + 4u > cfg_size) {
-        return;
-    }
-    uint8_t *p = reinterpret_cast<uint8_t *>(&g_cfg);
-    p[byte_index + 0] = static_cast<uint8_t>((word >> 24) & 0xFFu);
-    p[byte_index + 1] = static_cast<uint8_t>((word >> 16) & 0xFFu);
-    p[byte_index + 2] = static_cast<uint8_t>((word >> 8)  & 0xFFu);
-    p[byte_index + 3] = static_cast<uint8_t>((word >> 0)  & 0xFFu);
-}
 
 
 
-#define MKU_CFG_HEADER_SIZE  8u
-#define QUADWORD_SIZE        16u
 
-static bool FlashReadConfig(MKUCfg *out)
-{
-    if (out == nullptr) {
-        return false;
-    }
-    const uint32_t *p = reinterpret_cast<const uint32_t *>(FLASH_CFG_ADDR);
-    if (p[0] != MKU_CFG_HEADER_MAGIC) {
-        return false;
-    }
-    uint32_t sz = p[1];
-    if (sz != sizeof(MKUCfg) || sz > FLASH_CFG_SIZE - MKU_CFG_HEADER_SIZE) {
-        return false;
-    }
-    memcpy(out, p + 2, sz);
-    return true;
-}
-
-void FlashWriteData(uint8_t *ConfigPtr, uint32_t ConfigSize)
-{
-    if (ConfigPtr == nullptr || ConfigSize != sizeof(MKUCfg) ||
-        ConfigSize > FLASH_CFG_SIZE - MKU_CFG_HEADER_SIZE) {
-        return;
-    }
-
-    __attribute__((aligned(16))) uint8_t buf[FLASH_CFG_SIZE_BYTES];
-    uint32_t *hdr = reinterpret_cast<uint32_t *>(buf);
-    hdr[0] = MKU_CFG_HEADER_MAGIC;
-    hdr[1] = ConfigSize;
-    memcpy(buf + MKU_CFG_HEADER_SIZE, ConfigPtr, ConfigSize);
-
-    uint32_t total = MKU_CFG_HEADER_SIZE + ConfigSize;
-    uint32_t n_quad = (total + QUADWORD_SIZE - 1u) / QUADWORD_SIZE;
-
-    FLASH_EraseInitTypeDef erase;
-    uint32_t sector_err = 0u;
-#if defined(FLASH_TYPEERASE_SECTORS_NS)
-    erase.TypeErase = FLASH_TYPEERASE_SECTORS_NS;
-#else
-    erase.TypeErase = FLASH_TYPEERASE_SECTORS;
-#endif
-    erase.Banks = FLASH_BANK_2;
-    erase.Sector = FLASH_CFG_SECTOR;
-    erase.NbSectors = 1;
-
-    HAL_StatusTypeDef st = HAL_FLASH_Unlock();
-    if (st != HAL_OK) {
-        return;
-    }
-    st = HAL_FLASHEx_Erase(&erase, &sector_err);
-    if (st != HAL_OK) {
-        HAL_FLASH_Lock();
-        return;
-    }
-#if defined(FLASH_TYPEPROGRAM_QUADWORD_NS)
-    uint32_t prog_type = FLASH_TYPEPROGRAM_QUADWORD_NS;
-#else
-    uint32_t prog_type = FLASH_TYPEPROGRAM_QUADWORD;
-#endif
-    for (uint32_t i = 0u; i < n_quad && st == HAL_OK; i++) {
-        uint32_t addr = FLASH_CFG_ADDR + i * QUADWORD_SIZE;
-        st = HAL_FLASH_Program(prog_type, addr,
-                               reinterpret_cast<uint32_t>(buf + i * QUADWORD_SIZE));
-    }
-    HAL_FLASH_Lock();
-}
-
-void SaveConfig(void)
-{
-    uint32_t size = GetConfigSize();
-    (void)size;
-    FlashWriteData(reinterpret_cast<uint8_t *>(&g_cfg), size);
-    g_saved_cfg = g_cfg;
-}
 
 void ResetMCU(void)
 {
-    NVIC_SystemReset();
+	isReset = 1;
 }
 
 uint32_t GetID(void)
@@ -512,47 +415,6 @@ void CommandCB(uint8_t Dev, uint8_t Command, uint8_t *Parameters)
     }
 }
 
-void App_CanOnRx(uint8_t bus)
-{
-    uint32_t now = HAL_GetTick();
-    if (bus == 1u) {
-        CAN1_Active = 1u;
-        can1_last_rx_tick = now;
-    } else if (bus == 2u) {
-        CAN2_Active = 1u;
-        can2_last_rx_tick = now;
-    }
-}
-
-void App_CanRxPush(uint32_t id, const uint8_t *data, uint8_t bus)
-{
-    uint8_t next = static_cast<uint8_t>(can_rx_head + 1u);
-    if (next >= APP_CAN_RX_RING_SIZE) {
-        next = 0u;
-    }
-    if (next == can_rx_tail) {
-        can_rx_tail++;
-        if (can_rx_tail >= APP_CAN_RX_RING_SIZE) {
-            can_rx_tail = 0u;
-        }
-    }
-    can_rx_ring[can_rx_head].id = id;
-    can_rx_ring[can_rx_head].bus = bus;
-    memcpy(can_rx_ring[can_rx_head].data, data, 8u);
-    can_rx_head = next;
-}
-
-void App_CanProcess(void)
-{
-    while (can_rx_head != can_rx_tail) {
-        AppCanRxEntry *e = &can_rx_ring[can_rx_tail];
-        can_rx_tail++;
-        if (can_rx_tail >= APP_CAN_RX_RING_SIZE) {
-            can_rx_tail = 0u;
-        }
-        ProtocolParse(e->id, e->data, e->bus);
-    }
-}
 
 void App_Init(void)
 {
@@ -628,7 +490,7 @@ void App_Timer1ms(void)
     static uint16_t status_cnt = 0u;
     static uint16_t tmax_cnt = 0u;
 
-    uint32_t now = HAL_GetTick();
+
     extern Device BoardDevicesList[];
     BoardDevicesList[1].d_type = g_dpt.GetDT();
 
@@ -636,37 +498,9 @@ void App_Timer1ms(void)
         status_cnt++;
     } else {
         status_cnt = 0u;
-        /* cmd=0 heartbeat для ППКУ:
-         * [0..3]  tick (LE)
-         * [4]     CAN flags (используется как can_status_mask в ППКУ)
-         * [5]     измеренное U24: шаг 0.1V (как в статусе ППКУ)
-         * [6]     reserved */
-        uint8_t status_data[7] = {
-            (uint8_t)(now & 0xFFu),
-            (uint8_t)((now >> 8) & 0xFFu),
-            (uint8_t)((now >> 16) & 0xFFu),
-            (uint8_t)((now >> 24) & 0xFFu),
-            (uint8_t)(CAN1_Active | (CAN2_Active << 1)),
-            0u,
-            0u
-        };
 
-        /* U24: вычисляем из ADC-кода канала 11 (internal 24V). */
-        {
-            const uint32_t VREF_MV = 3300u;
-            const uint32_t ADC_MAX = 4095u;
-            const uint32_t DIV_K   = 11u;
+        App_SendStatus();
 
-            uint32_t raw_u24 = ADC_GetU24Filtered();
-            uint32_t v_adc_mv = (raw_u24 * VREF_MV) / ADC_MAX;
-            uint32_t u24_mv   = v_adc_mv * DIV_K;          /* пересчёт к 24В */
-            uint32_t code_01v = u24_mv / 100u;             /* 0.1V шаг как у ППКУ */
-            if (code_01v > 255u) {
-                code_01v = 255u;
-            }
-            status_data[5] = (uint8_t)code_01v;
-        }
-        SendMessage(0, 0, status_data, SEND_NOW, BUS_CAN12);
     }
 
     if (led_cnt < 1000u) {
@@ -683,8 +517,10 @@ void App_Timer1ms(void)
         }
     }
 */
+
     for (uint8_t i = 0; i < NUM_DEV_IN_MCU; i++) {
         if (g_extinguish_armed[i]) {
+        	uint32_t now = HAL_GetTick();
             if ((int32_t)(now - g_extinguish_deadline_ms[i]) >= 0) {
                 g_extinguish_armed[i] = 0u;
                 uint8_t params[7] = {0,0,0,0,0,0,0};
@@ -740,24 +576,17 @@ void App_Timer1ms(void)
     } else {
         HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_2);
     }
+
+    // задержка софт-рестарта. нужно чтобы усройство успело широковещательную переслать команду дальше
+    if(isReset) {
+    	ResetDelayms--;
+    	if(ResetDelayms == 0)
+    		NVIC_SystemReset();
+    }
+
 }
 
-void App_UpdateCanActivity(void)
-{
-    uint32_t now = HAL_GetTick();
-    if (can1_last_rx_tick != 0u) {
-        if ((now - can1_last_rx_tick) >= 3000u) {
-            CAN1_Active = 0u;
-            can1_last_rx_tick = 0u;
-        }
-    }
-    if (can2_last_rx_tick != 0u) {
-        if ((now - can2_last_rx_tick) >= 3000u) {
-            CAN2_Active = 0u;
-            can2_last_rx_tick = 0u;
-        }
-    }
-}
+
 
 void App_SetDPTAdcValues(uint16_t ch_l, uint16_t ch_h, uint16_t ch_u24)
 {
@@ -768,11 +597,11 @@ void App_SetDPTAdcValues(uint16_t ch_l, uint16_t ch_h, uint16_t ch_u24)
 
     uint32_t v_adc_l_mv = (uint32_t)ch_l * VREF_MV / ADC_MAX;
     uint32_t v_adc_h_mv = (uint32_t)ch_h * VREF_MV / ADC_MAX;
-    uint32_t v_adc_u_mv = (uint32_t)ch_u24 * VREF_MV / ADC_MAX;
+    uint32_t v_adc_u_mv = 5000;//(uint32_t)ch_u24 * VREF_MV / ADC_MAX;
 
     uint32_t v_line_l_mv = v_adc_l_mv * DIV_K;
     uint32_t v_line_h_mv = v_adc_h_mv * DIV_K;
-    uint32_t u24_mv      = 5000 * DIV_K;//v_adc_u_mv * DIV_K; // мы всегда в этой версии и далее подаём 5В.
+    uint32_t u24_mv      = v_adc_u_mv * DIV_K;//v_adc_u_mv * DIV_K; // мы всегда в этой версии и далее подаём 5В.
 
     if (v_line_l_mv == 0u) {
         v_line_l_mv = 1u;
