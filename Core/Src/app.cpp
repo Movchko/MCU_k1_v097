@@ -45,6 +45,8 @@ static VDeviceIgniter g_igniter2(3);
 
 static uint32_t g_extinguish_deadline_ms[NUM_DEV_IN_MCU];
 static uint8_t  g_extinguish_armed[NUM_DEV_IN_MCU];
+static uint8_t  g_extinguish_paused[NUM_DEV_IN_MCU];
+static uint32_t g_extinguish_remaining_ms[NUM_DEV_IN_MCU];
 
 
 
@@ -198,6 +200,8 @@ extern "C" void RcvStopExtinguishment(uint32_t MsgID, uint8_t *MsgData, uint8_t 
     }
 
     g_extinguish_armed[(uint8_t)ign_slot] = 0u;
+    g_extinguish_paused[(uint8_t)ign_slot] = 0u;
+    g_extinguish_remaining_ms[(uint8_t)ign_slot] = 0u;
     SetReplyStopExtinguishment((uint8_t)(ign_slot + 1)); /* slot1->dev2, slot2->dev3 */
 }
 
@@ -227,7 +231,62 @@ extern "C" void RcvStartExtinguishment(uint32_t MsgID,  uint8_t *MsgData, uint8_
 
 	g_extinguish_deadline_ms[(uint8_t)ign_slot] = HAL_GetTick() + delay_ms;
 	g_extinguish_armed[(uint8_t)ign_slot] = 1u;
+	g_extinguish_paused[(uint8_t)ign_slot] = 0u;
+	g_extinguish_remaining_ms[(uint8_t)ign_slot] = delay_ms;
 	SetReplyStartExtinguishment((uint8_t)(ign_slot + 1)); /* slot1->dev2, slot2->dev3 */
+}
+
+extern "C" void RcvPauseExtinguishmentTimer(uint32_t MsgID, uint8_t *MsgData, uint8_t is_mine)
+{
+	(void)MsgData;
+	if (is_mine == 0u) {
+		return;
+	}
+
+	int8_t ign_slot = App_FindIgniterSlotByMsgId(MsgID);
+	if (ign_slot < 0) {
+		return;
+	}
+	if (!g_extinguish_armed[(uint8_t)ign_slot]) {
+		return;
+	}
+
+	if (!g_extinguish_paused[(uint8_t)ign_slot]) {
+		uint32_t now = HAL_GetTick();
+		if ((int32_t)(g_extinguish_deadline_ms[(uint8_t)ign_slot] - now) > 0) {
+			g_extinguish_remaining_ms[(uint8_t)ign_slot] =
+				g_extinguish_deadline_ms[(uint8_t)ign_slot] - now;
+		} else {
+			g_extinguish_remaining_ms[(uint8_t)ign_slot] = 0u;
+		}
+		g_extinguish_paused[(uint8_t)ign_slot] = 1u;
+	}
+
+	SetReplyPauseExtinguishmentTimer((uint8_t)(ign_slot + 1));
+}
+
+extern "C" void RcvResumeExtinguishmentTimer(uint32_t MsgID, uint8_t *MsgData, uint8_t is_mine)
+{
+	(void)MsgData;
+	if (is_mine == 0u) {
+		return;
+	}
+
+	int8_t ign_slot = App_FindIgniterSlotByMsgId(MsgID);
+	if (ign_slot < 0) {
+		return;
+	}
+	if (!g_extinguish_armed[(uint8_t)ign_slot]) {
+		return;
+	}
+
+	if (g_extinguish_paused[(uint8_t)ign_slot]) {
+		uint32_t now = HAL_GetTick();
+		g_extinguish_deadline_ms[(uint8_t)ign_slot] = now + g_extinguish_remaining_ms[(uint8_t)ign_slot];
+		g_extinguish_paused[(uint8_t)ign_slot] = 0u;
+	}
+
+	SetReplyResumeExtinguishmentTimer((uint8_t)(ign_slot + 1));
 }
 
 static void App_DPT_SetResMeasureMode(void)
@@ -519,10 +578,12 @@ void App_Timer1ms(void)
 */
 
     for (uint8_t i = 0; i < NUM_DEV_IN_MCU; i++) {
-        if (g_extinguish_armed[i]) {
+        if (g_extinguish_armed[i] && !g_extinguish_paused[i]) {
         	uint32_t now = HAL_GetTick();
             if ((int32_t)(now - g_extinguish_deadline_ms[i]) >= 0) {
                 g_extinguish_armed[i] = 0u;
+                g_extinguish_paused[i] = 0u;
+                g_extinguish_remaining_ms[i] = 0u;
                 uint8_t params[7] = {0,0,0,0,0,0,0};
                 if (i == 1u) {
                     g_igniter1.CommandCB(10, params);
