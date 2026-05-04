@@ -21,6 +21,12 @@ volatile uint8_t CAN2_Active = 0;
 static uint32_t can1_last_rx_tick = 0;
 static uint32_t can2_last_rx_tick = 0;
 
+typedef enum CANState {
+    CAN_STATE_ACTIVE   = 0,
+	CAN_STATE_SHORT  = 1,
+	CAN_STATE_BREAK = 2
+} CANStateKind;
+
 typedef struct {
   uint32_t id;
   uint8_t  data[8];
@@ -137,6 +143,9 @@ void CANSendData(uint8_t *Buf)
   CanTxEnqueue(id, &Buf[4], bus);
 }
 
+FDCAN_ProtocolStatusTypeDef curprotocolStatus1 = {};
+FDCAN_ProtocolStatusTypeDef curprotocolStatus2 = {};
+
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 {
   if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) == 0U) {
@@ -174,6 +183,11 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
     }
     App_CanRxPush(rxHeader.Identifier, data, src_bus);
   }
+
+
+
+  HAL_FDCAN_GetProtocolStatus(&hfdcan1, &curprotocolStatus1);
+  HAL_FDCAN_GetProtocolStatus(&hfdcan2, &curprotocolStatus2);
 }
 
 void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan, uint32_t ErrorStatusITs)
