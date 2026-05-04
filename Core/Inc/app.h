@@ -14,6 +14,9 @@ void App_CanProcess(void);
 void App_SetDPTAdcValues(uint16_t ch_l, uint16_t ch_h, uint16_t ch_u24);
 void App_CanOnRx(uint8_t bus);      /* 1 = CAN1, 2 = CAN2 */
 void App_UpdateCanActivity(void);
+uint8_t App_GetCanStatusMask(void);
+uint8_t App_GetCanStatusMask(void);
+uint8_t App_GetCanStateMask(void);  /* bits[1:0]=CAN0 state, bits[3:2]=CAN1 state */
 extern volatile uint8_t CAN1_Active;
 extern volatile uint8_t CAN2_Active;
 void FDCAN_StartAll(void);

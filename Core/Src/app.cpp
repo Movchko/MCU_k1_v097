@@ -335,7 +335,8 @@ void App_SendStatus() {
      * [0..3]  tick (LE)
      * [4]     CAN flags (используется как can_status_mask в ППКУ)
      * [5]     измеренное U24: шаг 0.1V (как в статусе ППКУ)
-     * [6]     reserved */
+     * [6]     CAN state mask: bits[1:0]=CAN0 (0=OK,1=КЗ,2=ОБРЫВ),
+     *                          bits[3:2]=CAN1 (0=OK,1=КЗ,2=ОБРЫВ) */
     uint8_t status_data[7] = {
         (uint8_t)(now & 0xFFu),
         (uint8_t)((now >> 8) & 0xFFu),
@@ -343,7 +344,7 @@ void App_SendStatus() {
         (uint8_t)((now >> 24) & 0xFFu),
         (uint8_t)(CAN1_Active | (CAN2_Active << 1)),
         0u,
-        0u
+        App_GetCanStateMask()
     };
 
     /* U24: вычисляем из ADC-кода канала 11 (internal 24V). */

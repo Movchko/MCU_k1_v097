@@ -20,12 +20,16 @@ volatile uint8_t CAN1_Active = 0;
 volatile uint8_t CAN2_Active = 0;
 static uint32_t can1_last_rx_tick = 0;
 static uint32_t can2_last_rx_tick = 0;
+static uint32_t can_state_last_update_ms = 0;
 
 typedef enum CANState {
     CAN_STATE_ACTIVE   = 0,
 	CAN_STATE_SHORT  = 1,
 	CAN_STATE_BREAK = 2
 } CANStateKind;
+
+volatile uint8_t CAN1_State = CAN_STATE_ACTIVE;
+volatile uint8_t CAN2_State = CAN_STATE_ACTIVE;
 
 typedef struct {
   uint32_t id;
@@ -146,6 +150,30 @@ void CANSendData(uint8_t *Buf)
 FDCAN_ProtocolStatusTypeDef curprotocolStatus1 = {};
 FDCAN_ProtocolStatusTypeDef curprotocolStatus2 = {};
 
+static uint8_t DecodeCanStateFromLec(uint32_t lec)
+{
+  if ((lec & 0x1u) == 0u) {
+    return (uint8_t)CAN_STATE_ACTIVE;
+  }
+  return ((lec & 0x2u) != 0u) ? (uint8_t)CAN_STATE_BREAK : (uint8_t)CAN_STATE_SHORT;
+}
+
+static void App_UpdateCanLineState(void)
+{
+  uint32_t now = HAL_GetTick();
+  if ((now - can_state_last_update_ms) < 1000u) {
+    return;
+  }
+  can_state_last_update_ms = now;
+
+  if (HAL_FDCAN_GetProtocolStatus(&hfdcan1, &curprotocolStatus1) == HAL_OK) {
+    CAN1_State = DecodeCanStateFromLec((uint32_t)curprotocolStatus1.LastErrorCode);
+  }
+  if (HAL_FDCAN_GetProtocolStatus(&hfdcan2, &curprotocolStatus2) == HAL_OK) {
+    CAN2_State = DecodeCanStateFromLec((uint32_t)curprotocolStatus2.LastErrorCode);
+  }
+}
+
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 {
   if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) == 0U) {
@@ -184,10 +212,6 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
     App_CanRxPush(rxHeader.Identifier, data, src_bus);
   }
 
-
-
-  HAL_FDCAN_GetProtocolStatus(&hfdcan1, &curprotocolStatus1);
-  HAL_FDCAN_GetProtocolStatus(&hfdcan2, &curprotocolStatus2);
 }
 
 void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan, uint32_t ErrorStatusITs)
@@ -222,6 +246,8 @@ void App_UpdateCanActivity(void)
             can2_last_rx_tick = 0u;
         }
     }
+
+    App_UpdateCanLineState();
 }
 
 void App_CanOnRx(uint8_t bus)
@@ -264,4 +290,9 @@ void App_CanProcess(void)
         }
         ProtocolParse(e->id, e->data, e->bus);
     }
+}
+
+uint8_t App_GetCanStateMask(void)
+{
+    return (uint8_t)((CAN1_State & 0x3u) | ((CAN2_State & 0x3u) << 2));
 }
