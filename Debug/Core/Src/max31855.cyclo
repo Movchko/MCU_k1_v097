@@ -1,2 +1,0 @@
-../Core/Src/max31855.c:6:19:MAX31855_ReadRaw	3
-../Core/Src/max31855.c:31:19:MAX31855_ReadTemperature	5
