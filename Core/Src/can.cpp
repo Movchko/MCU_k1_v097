@@ -34,13 +34,15 @@ volatile uint8_t CAN2_State = CAN_STATE_ACTIVE;
 typedef struct {
   uint32_t id;
   uint8_t  data[8];
-  uint8_t  bus;
 } CanTxEntry;
 
 #define CAN_TX_RING_SIZE  256
-static CanTxEntry can_tx_ring[CAN_TX_RING_SIZE];
-static volatile uint8_t can_tx_head = 0;
-static volatile uint8_t can_tx_tail = 0;
+static CanTxEntry can1_tx_ring[CAN_TX_RING_SIZE];
+static volatile uint8_t can1_tx_head = 0;
+static volatile uint8_t can1_tx_tail = 0;
+static CanTxEntry can2_tx_ring[CAN_TX_RING_SIZE];
+static volatile uint8_t can2_tx_head = 0;
+static volatile uint8_t can2_tx_tail = 0;
 
 extern FDCAN_HandleTypeDef hfdcan1;
 extern FDCAN_HandleTypeDef hfdcan2;
@@ -77,31 +79,44 @@ void FDCAN_StartAll(void)
                                  0);
 }
 
-static void CanTxEnqueue(uint32_t id, const uint8_t *data, uint8_t busMask)
+static void CanTxEnqueueOne(CanTxEntry *ring, volatile uint8_t *head, volatile uint8_t *tail,
+                            uint32_t id, const uint8_t *data)
 {
-  uint8_t next = (uint8_t)(can_tx_head + 1u);
+  uint8_t next = (uint8_t)(*head + 1u);
   if (next >= CAN_TX_RING_SIZE) {
     next = 0u;
   }
-  if (next == can_tx_tail) {
-    can_tx_tail++;
-    if (can_tx_tail >= CAN_TX_RING_SIZE) {
-      can_tx_tail = 0u;
+  if (next == *tail) {
+    (*tail)++;
+    if (*tail >= CAN_TX_RING_SIZE) {
+      *tail = 0u;
     }
   }
 
-  can_tx_ring[can_tx_head].id = id;
-  can_tx_ring[can_tx_head].bus = busMask;
+  ring[*head].id = id;
   for (uint8_t i = 0; i < 8u; i++) {
-    can_tx_ring[can_tx_head].data[i] = data[i];
+    ring[*head].data[i] = data[i];
   }
-  can_tx_head = next;
+  *head = next;
 }
 
-void App_CanTxProcess(void)
+static void CanTxEnqueue(uint32_t id, const uint8_t *data, uint8_t busMask)
 {
-  while (can_tx_head != can_tx_tail) {
-    CanTxEntry *e = &can_tx_ring[can_tx_tail];
+  if ((busMask & BUS_CAN0) != 0u) {
+    CanTxEnqueueOne(can1_tx_ring, &can1_tx_head, &can1_tx_tail, id, data);
+  }
+  if ((busMask & BUS_CAN1) != 0u) {
+    CanTxEnqueueOne(can2_tx_ring, &can2_tx_head, &can2_tx_tail, id, data);
+  }
+}
+
+static void App_CanTxProcessBus(FDCAN_HandleTypeDef *hfdcan,
+                                CanTxEntry *ring,
+                                volatile uint8_t *head,
+                                volatile uint8_t *tail)
+{
+  while (*head != *tail) {
+    CanTxEntry *e = &ring[*tail];
     FDCAN_TxHeaderTypeDef txHeader;
 
     txHeader.Identifier = e->id;
@@ -114,30 +129,24 @@ void App_CanTxProcess(void)
     txHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
     txHeader.MessageMarker = 0;
 
-    uint8_t sent = 0u;
-    if (e->bus & BUS_CAN0) {
-      if (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) > 0U) {
-        if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txHeader, e->data) == HAL_OK) {
-          sent = 1u;
-        }
-      }
+    if (HAL_FDCAN_GetTxFifoFreeLevel(hfdcan) == 0U) {
+      break;
     }
-    if (e->bus & BUS_CAN1) {
-      if (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan2) > 0U) {
-        if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2, &txHeader, e->data) == HAL_OK) {
-          sent = 1u;
-        }
-      }
-    }
-    if (sent == 0u) {
+    if (HAL_FDCAN_AddMessageToTxFifoQ(hfdcan, &txHeader, e->data) != HAL_OK) {
       break;
     }
 
-    can_tx_tail++;
-    if (can_tx_tail >= CAN_TX_RING_SIZE) {
-      can_tx_tail = 0u;
+    (*tail)++;
+    if (*tail >= CAN_TX_RING_SIZE) {
+      *tail = 0u;
     }
   }
+}
+
+void App_CanTxProcess(void)
+{
+  App_CanTxProcessBus(&hfdcan1, can1_tx_ring, &can1_tx_head, &can1_tx_tail);
+  App_CanTxProcessBus(&hfdcan2, can2_tx_ring, &can2_tx_head, &can2_tx_tail);
 }
 
 void CANSendData(uint8_t *Buf)
