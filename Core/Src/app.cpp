@@ -332,16 +332,18 @@ static void VDeviceSetStatus(uint8_t DNum, uint8_t Code, const uint8_t *Paramete
 void App_SendStatus() {
 	   uint32_t now = HAL_GetTick();
     /* cmd=0 heartbeat для ППКУ:
-     * [0..3]  tick (LE)
+     * [0]     секунды с запуска (mod 256)
+     * [1..3]  резерв (нули)
      * [4]     CAN flags (используется как can_status_mask в ППКУ)
-     * [5]     измеренное U24: шаг 0.1V (как в статусе ППКУ)
+     * [5]     измеренное U24: шаг 1V
      * [6]     CAN state mask: bits[1:0]=CAN0 (0=OK,1=КЗ,2=ОБРЫВ),
      *                          bits[3:2]=CAN1 (0=OK,1=КЗ,2=ОБРЫВ) */
+    uint8_t sec = (uint8_t)(now / 1000u);
     uint8_t status_data[7] = {
-        (uint8_t)(now & 0xFFu),
-        (uint8_t)((now >> 8) & 0xFFu),
-        (uint8_t)((now >> 16) & 0xFFu),
-        (uint8_t)((now >> 24) & 0xFFu),
+        sec,
+        0u,
+        0u,
+        0u,
         (uint8_t)(CAN1_Active | (CAN2_Active << 1)),
         0u,
         App_GetCanStateMask()
@@ -356,11 +358,11 @@ void App_SendStatus() {
     uint32_t raw_u24 = ADC_GetU24Filtered();
     uint32_t v_adc_mv = (raw_u24 * VREF_MV) / ADC_MAX;
     uint32_t u24_mv   = v_adc_mv * DIV_K;          /* пересчёт к 24В */
-    uint32_t code_01v = u24_mv / 100u;             /* 0.1V шаг как у ППКУ */
-    if (code_01v > 255u)
-    	code_01v = 255u;
+    uint32_t code_1v = u24_mv / 1000u;
+    if (code_1v > 255u)
+    	code_1v = 255u;
 
-    status_data[5] = (uint8_t)code_01v;
+    status_data[5] = (uint8_t)code_1v;
 
     SendMessage(0, 0, status_data, SEND_NOW, BUS_CAN12);
 }
