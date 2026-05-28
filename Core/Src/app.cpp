@@ -365,6 +365,10 @@ void App_SendStatus() {
     status_data[5] = (uint8_t)code_1v;
 
     SendMessage(0, 0, status_data, SEND_NOW, BUS_CAN12);
+
+    /* Позиционный маяк кольца: каждый МКУ раз в секунду шлёт стартовый вес 0 в обе стороны. */
+    uint8_t pos_data[7] = {0u, 0u, 0u, 0u, 0u, 0u, 0u};
+    SendMessage(0, ServiceCmd_PositionDevice, pos_data, SEND_NOW, BUS_CAN12);
 }
 
 void SetHAdr(uint8_t h_adr)
@@ -682,6 +686,11 @@ void App_SetDPTAdcValues(uint16_t ch_l, uint16_t ch_h, uint16_t ch_u24)
     if (k_scaled > 1500) k_scaled = 1500;
 
     uint32_t r_corr = (uint32_t)((r_line_ohm * (uint32_t)k_scaled + 500u) / 1000u);
+
+#if UNIQ_DEBUG
+    r_corr = r_corr / 3;
+#endif
+
     g_dpt.SetAdcValues((uint16_t)r_corr, 0);
 }
 

@@ -77,6 +77,7 @@ uint16_t ADC_GetU24Filtered(void);
 #define LED_Pin GPIO_PIN_10
 #define LED_GPIO_Port GPIOB
 
+#define UNIQ_DEBUG 0
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */
