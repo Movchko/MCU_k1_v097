@@ -13,9 +13,13 @@ static volatile uint16_t ign1_adc_filtered = 0;
 static volatile uint16_t ign2_adc_filtered = 0;
 static volatile uint16_t u24_adc_filtered = 0;
 
+uint16_t ADC_OFFSET[MCU_K1_NUM_ADC_CHANNEL] = {140};
+uint16_t ADC_COEF[MCU_K1_NUM_ADC_CHANNEL] = {11};
+
 uint16_t ADC_GetIgniter1Filtered(void) { return ign1_adc_filtered; }
 uint16_t ADC_GetIgniter2Filtered(void) { return ign2_adc_filtered; }
-uint16_t ADC_GetU24Filtered(void)      { return u24_adc_filtered; }
+uint16_t ADC_GetU24Filtered(void) { return (u24_adc_filtered  - ADC_OFFSET[0]) * ADC_COEF[0]; }
+
 
 static uint16_t SmaProcess(uint8_t num, uint16_t val)
 {

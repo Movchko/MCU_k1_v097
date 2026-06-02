@@ -350,18 +350,13 @@ void App_SendStatus() {
     };
 
     /* U24: вычисляем из ADC-кода канала 11 (internal 24V). */
-
     const uint32_t VREF_MV = 3300u;
     const uint32_t ADC_MAX = 4095u;
-    const uint32_t DIV_K   = 10u;
-
     uint32_t raw_u24 = ADC_GetU24Filtered();
     uint32_t v_adc_mv = (raw_u24 * VREF_MV) / ADC_MAX;
-    uint32_t u24_mv   = v_adc_mv * DIV_K;          /* пересчёт к 24В */
-    uint32_t code_1v = u24_mv / 1000u;
-    if (code_1v > 255u)
-    	code_1v = 255u;
-
+    uint32_t u24_mv = v_adc_mv;
+    uint32_t code_1v = (u24_mv + 500) / 1000u;
+    if (code_1v > 255u) code_1v = 255u;
     status_data[5] = (uint8_t)code_1v;
 
     SendMessage(0, 0, status_data, SEND_NOW, BUS_CAN12);
