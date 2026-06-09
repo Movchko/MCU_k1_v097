@@ -32,6 +32,7 @@ extern "C" {
 #define MAX_FAULT_MASK_SCG   0x04u
 #define MAX_FAULT_MASK_OC    0x08u
 
+extern DTS_HandleTypeDef hdts;
 
 MAX31855_Data t_couple;
 
@@ -333,15 +334,30 @@ void App_SendStatus() {
 	   uint32_t now = HAL_GetTick();
     /* cmd=0 heartbeat для ППКУ:
      * [0]     секунды с запуска (mod 256)
-     * [1..3]  резерв (нули)
+     * [1]     внутр. температура DTS (int8)
+     * [2..3]  резерв (нули)
      * [4]     CAN flags (используется как can_status_mask в ППКУ)
      * [5]     измеренное U24: шаг 1V
      * [6]     CAN state mask: bits[1:0]=CAN0 (0=OK,1=КЗ,2=ОБРЫВ),
      *                          bits[3:2]=CAN1 (0=OK,1=КЗ,2=ОБРЫВ) */
     uint8_t sec = (uint8_t)(now / 1000u);
+
+
+	int32_t temperature;
+	  /* Get temperature in deg C */
+	if(HAL_DTS_GetTemperature(&hdts, &temperature)!= HAL_OK)
+	{
+	    /* DTS GetTemperature Error */
+	}
+
+	if(temperature > 128) temperature = 128;
+	if(temperature < -128) temperature = -128;
+
+	uint8_t temp = (uint8_t)temperature;
+
     uint8_t status_data[7] = {
         sec,
-        0u,
+		temp,
         0u,
         0u,
         (uint8_t)(CAN1_Active | (CAN2_Active << 1)),
