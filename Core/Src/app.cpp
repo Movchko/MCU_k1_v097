@@ -6,6 +6,7 @@ extern "C" {
 
 #include "device_config.h"
 #include "device_igniter.hpp"
+#include "app_igniter_launch.hpp"
 #include "device_lswitch.hpp"
 
 #include "max31855.h"
@@ -188,6 +189,37 @@ static int8_t App_FindIgniterSlotByMsgId(uint32_t MsgID)
     return -1;
 }
 
+static void App_ArmIgniterSlot(uint8_t ign_slot, uint8_t zd, uint8_t md)
+{
+    uint32_t delay_ms = ((uint32_t)zd + (uint32_t)md) * 1000u;
+
+    g_extinguish_deadline_ms[ign_slot] = HAL_GetTick() + delay_ms;
+    g_extinguish_armed[ign_slot] = 1u;
+    g_extinguish_paused[ign_slot] = 0u;
+    g_extinguish_remaining_ms[ign_slot] = delay_ms;
+    SetReplyStartExtinguishment((uint8_t)(ign_slot + 1u));
+}
+
+static void App_ArmIgniterSlotWithLaunch(uint8_t ign_slot, uint8_t launch_type, uint8_t cmd_zd, uint8_t cmd_md)
+{
+    uint8_t zd = 0u;
+    uint8_t md = 0u;
+
+    Backend_ResolveIgniterStartDelays(launch_type, cmd_zd, cmd_md, ign_slot,
+                                      g_cfg.zone_delay, g_cfg.module_delay, NUM_DEV_IN_MCU,
+                                      &zd, &md);
+    App_ArmIgniterSlot(ign_slot, zd, md);
+}
+
+static void App_ArmAllIgnitersWithLaunch(uint8_t launch_type, uint8_t cmd_zd, uint8_t cmd_md)
+{
+    for (uint8_t i = 0u; i < NUM_DEV_IN_MCU; i++) {
+        if (g_cfg.VDtype[i] == DEVICE_IGNITER_TYPE) {
+            App_ArmIgniterSlotWithLaunch(i, launch_type, cmd_zd, cmd_md);
+        }
+    }
+}
+
 extern "C" void RcvStopExtinguishment(uint32_t MsgID, uint8_t *MsgData, uint8_t is_mine)
 {
     (void)MsgData;
@@ -220,21 +252,59 @@ extern "C" void RcvStartExtinguishment(uint32_t MsgID,  uint8_t *MsgData, uint8_
 		return;
 	}
 
+	uint8_t zd = MsgData[2];
+	uint8_t md = MsgData[3];
+	uint8_t launch_type = MsgData[4];
+
+	if (Backend_IsIgniterBroadcastId(MsgID)) {
+		if (!Backend_StartExtinguishZoneMatches(MsgID, MsgData[1], g_cfg.UId.devId.zone)) {
+			return;
+		}
+		App_ArmAllIgnitersWithLaunch(launch_type, zd, md);
+		return;
+	}
+
 	int8_t ign_slot = App_FindIgniterSlotByMsgId(MsgID);
 	if (ign_slot < 0) {
 		return;
 	}
 
-	/* payload backend fire: [0]=cmd, [1]=zone, [2]=zone_delay_s, [3]=module_delay_s */
-	uint8_t zd = MsgData[2];
-	uint8_t md = MsgData[3];
-	uint32_t delay_ms = ((uint32_t)zd + (uint32_t)md) * 1000u;
+	App_ArmIgniterSlotWithLaunch((uint8_t)ign_slot, launch_type, zd, md);
+}
 
-	g_extinguish_deadline_ms[(uint8_t)ign_slot] = HAL_GetTick() + delay_ms;
-	g_extinguish_armed[(uint8_t)ign_slot] = 1u;
-	g_extinguish_paused[(uint8_t)ign_slot] = 0u;
-	g_extinguish_remaining_ms[(uint8_t)ign_slot] = delay_ms;
-	SetReplyStartExtinguishment((uint8_t)(ign_slot + 1)); /* slot1->dev2, slot2->dev3 */
+static uint8_t App_IsIgniterSlot(uint8_t slot, void *ctx)
+{
+	(void)ctx;
+	if (slot >= NUM_DEV_IN_MCU) {
+		return 0u;
+	}
+	return (g_cfg.VDtype[slot] == DEVICE_IGNITER_TYPE) ? 1u : 0u;
+}
+
+static uint8_t App_IsIgniterBurnRunning(uint8_t slot, void *ctx)
+{
+	(void)ctx;
+	if (slot == 1u) {
+		return g_igniter1.IsBurnRunning() ? 1u : 0u;
+	}
+	if (slot == 2u) {
+		return g_igniter2.IsBurnRunning() ? 1u : 0u;
+	}
+	return 0u;
+}
+
+static void App_FireIgniterSlot(uint8_t slot, void *ctx)
+{
+	(void)ctx;
+	g_extinguish_armed[slot] = 0u;
+	g_extinguish_paused[slot] = 0u;
+	g_extinguish_remaining_ms[slot] = 0u;
+	uint8_t params[7] = {0, 0, 0, 0, 0, 0, 0};
+	if (slot == 1u) {
+		g_igniter1.CommandCB(10, params);
+	} else if (slot == 2u) {
+		g_igniter2.CommandCB(10, params);
+	}
 }
 
 extern "C" void RcvPauseExtinguishmentTimer(uint32_t MsgID, uint8_t *MsgData, uint8_t is_mine)
@@ -444,15 +514,15 @@ void DefaultConfig(void)
     dpt_cfg->state_change_delay_ms = 100;
 
     DeviceIgniterConfig *ign1_cfg = reinterpret_cast<DeviceIgniterConfig*>(g_cfg.Devices[1].reserv);
-    ign1_cfg->disable_sc_check     = 1u;
-    ign1_cfg->threshold_break_low  = 1000u;
-    ign1_cfg->threshold_break_high = 3000u;
+    ign1_cfg->disable_sc_check     = 0u;
+    ign1_cfg->threshold_break_low  = 100;
+    ign1_cfg->threshold_break_high = 1000;
     ign1_cfg->burn_retry_count     = 0u;
 
     DeviceIgniterConfig *ign2_cfg = reinterpret_cast<DeviceIgniterConfig*>(g_cfg.Devices[2].reserv);
-    ign2_cfg->disable_sc_check     = 1u;
-    ign2_cfg->threshold_break_low  = 1000u;
-    ign2_cfg->threshold_break_high = 3000u;
+    ign2_cfg->disable_sc_check     = 0u;
+    ign2_cfg->threshold_break_low  = 100;
+    ign2_cfg->threshold_break_high = 1000;
     ign2_cfg->burn_retry_count     = 0u;
 }
 
@@ -595,23 +665,6 @@ void App_Timer1ms(void)
     }
 */
 
-    for (uint8_t i = 0; i < NUM_DEV_IN_MCU; i++) {
-        if (g_extinguish_armed[i] && !g_extinguish_paused[i]) {
-        	uint32_t now = HAL_GetTick();
-            if ((int32_t)(now - g_extinguish_deadline_ms[i]) >= 0) {
-                g_extinguish_armed[i] = 0u;
-                g_extinguish_paused[i] = 0u;
-                g_extinguish_remaining_ms[i] = 0u;
-                uint8_t params[7] = {0,0,0,0,0,0,0};
-                if (i == 1u) {
-                    g_igniter1.CommandCB(10, params);
-                } else if (i == 2u) {
-                    g_igniter2.CommandCB(10, params);
-                }
-            }
-        }
-    }
-
     if (tmax_cnt < 100u) {
         tmax_cnt++;
     } else {
@@ -634,11 +687,16 @@ void App_Timer1ms(void)
     }
 
     g_dpt.Timer1ms();
-    g_igniter1.Timer1ms();
-    g_igniter2.Timer1ms();
-
 
     BackendProcess();
+
+    AppIgniter_RunSequentialScheduler(NUM_DEV_IN_MCU, HAL_GetTick(), g_extinguish_deadline_ms,
+                                      g_extinguish_armed, g_extinguish_paused,
+                                      App_IsIgniterSlot, App_IsIgniterBurnRunning,
+                                      App_FireIgniterSlot, nullptr);
+
+    g_igniter1.Timer1ms();
+    g_igniter2.Timer1ms();
 
     uint16_t pwm1 = g_igniter1.GetPwm();
     if (pwm1 > 0u) {
