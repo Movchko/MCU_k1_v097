@@ -18,6 +18,11 @@ extern "C" {
 #include "main.h"
 #include "mku_cfg_flash.h"
 
+extern "C" {
+extern TIM_HandleTypeDef htim2;
+extern TIM_HandleTypeDef htim4;
+}
+
 #ifndef DEVICE_MCU_K1
 #define DEVICE_MCU_K1 20
 #endif
@@ -69,8 +74,92 @@ static uint8_t  g_tc_valid_streak = 0u;
 static int16_t	g_tc_prev_val = 0;
 extern bool isListener;
 
-static uint8_t ResetDelayms = 100;
+static uint32_t ResetDelayms = 3000;
 static uint8_t isReset = 0;
+
+/* Слот 0: ДПТ, слот 1: спичка1, слот 2: спичка2. VDtype[slot]==0 — канал отключён. */
+static uint8_t App_IsSlotEnabled(uint8_t slot)
+{
+	if (slot >= NUM_DEV_IN_MCU) {
+		return 0u;
+	}
+	return (g_cfg.VDtype[slot] != 0u) ? 1u : 0u;
+}
+
+static uint8_t App_IsIgniterSlotEnabled(uint8_t slot)
+{
+	if (slot >= NUM_DEV_IN_MCU) {
+		return 0u;
+	}
+	return (g_cfg.VDtype[slot] == DEVICE_IGNITER_TYPE) ? 1u : 0u;
+}
+
+static uint8_t App_SlotBoardDType(uint8_t slot)
+{
+	if (!App_IsSlotEnabled(slot)) {
+		return 0u;
+	}
+	return (uint8_t)(g_cfg.VDtype[slot] & 0xFFu);
+}
+
+static void App_RebuildBoardDevicesList(void)
+{
+	extern Device BoardDevicesList[];
+	extern uint8_t nDevs;
+
+	BoardDevicesList[0].zone   = g_cfg.UId.devId.zone;
+	BoardDevicesList[0].h_adr  = g_cfg.UId.devId.h_adr;
+	BoardDevicesList[0].l_adr  = g_cfg.UId.devId.l_adr;
+	BoardDevicesList[0].d_type = DEVICE_MCU_K1;
+
+	/* Фиксированные индексы BoardDevicesList и l_adr независимо от отключённых каналов. */
+	BoardDevicesList[1].zone   = g_cfg.UId.devId.zone;
+	BoardDevicesList[1].h_adr  = g_cfg.UId.devId.h_adr;
+	BoardDevicesList[1].l_adr  = 1;
+	BoardDevicesList[1].d_type = App_SlotBoardDType(0);
+
+	BoardDevicesList[2].zone   = g_cfg.UId.devId.zone;
+	BoardDevicesList[2].h_adr  = g_cfg.UId.devId.h_adr;
+	BoardDevicesList[2].l_adr  = 2;
+	BoardDevicesList[2].d_type = App_IsIgniterSlotEnabled(1) ? DEVICE_IGNITER_TYPE : 0u;
+
+	BoardDevicesList[3].zone   = g_cfg.UId.devId.zone;
+	BoardDevicesList[3].h_adr  = g_cfg.UId.devId.h_adr;
+	BoardDevicesList[3].l_adr  = 3;
+	BoardDevicesList[3].d_type = App_IsIgniterSlotEnabled(2) ? DEVICE_IGNITER_TYPE : 0u;
+
+	nDevs = 4;
+}
+
+static uint8_t App_IsBoardDevActive(uint8_t dnum)
+{
+	if (dnum == 1u) {
+		return App_IsSlotEnabled(0);
+	}
+	if (dnum == 2u) {
+		return App_IsIgniterSlotEnabled(1);
+	}
+	if (dnum == 3u) {
+		return App_IsIgniterSlotEnabled(2);
+	}
+	return 1u;
+}
+
+static void App_StopDisabledChannels(void)
+{
+	if (!App_IsIgniterSlotEnabled(1)) {
+		HAL_TIM_PWM_Stop(&htim4, TIM_CHANNEL_4);
+		g_extinguish_armed[1] = 0u;
+		g_extinguish_paused[1] = 0u;
+		g_extinguish_remaining_ms[1] = 0u;
+	}
+	if (!App_IsIgniterSlotEnabled(2)) {
+		HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_2);
+		g_extinguish_armed[2] = 0u;
+		g_extinguish_paused[2] = 0u;
+		g_extinguish_remaining_ms[2] = 0u;
+	}
+}
 
 static int16_t Median3(int16_t a, int16_t b, int16_t c)
 {
@@ -375,6 +464,10 @@ static void App_DPT_SetMaxMeasureMode(void)
 
 static void VDeviceSetStatus(uint8_t DNum, uint8_t Code, const uint8_t *Parameters)
 {
+    if (!App_IsBoardDevActive(DNum)) {
+        return;
+    }
+
     uint8_t data[7] = {0};
     for (uint8_t i = 0; i < 7; i++) {
         data[i] = Parameters[i];
@@ -455,18 +548,11 @@ void App_SendStatus() {
 void SetHAdr(uint8_t h_adr)
 {
     g_cfg.UId.devId.h_adr = h_adr;
-    extern uint8_t nDevs;
-    extern Device BoardDevicesList[];
-    for (uint8_t i = 0; i < nDevs; i++) {
-        BoardDevicesList[i].h_adr = g_cfg.UId.devId.h_adr;
-    }
+    App_RebuildBoardDevicesList();
     SaveConfig();
 }
 
 extern "C" {
-
-extern TIM_HandleTypeDef htim2;
-extern TIM_HandleTypeDef htim4;
 
 void DefaultConfig(void)
 {
@@ -504,7 +590,7 @@ void DefaultConfig(void)
     g_cfg.zone_delay = 5;
     g_cfg.module_delay[0] = 0;
     g_cfg.module_delay[1] = 2;
-    g_cfg.module_delay[2] = 3;
+    g_cfg.module_delay[2] = 4;
 
     DeviceDPTConfig *dpt_cfg = reinterpret_cast<DeviceDPTConfig*>(g_cfg.Devices[0].reserv);
     memset(dpt_cfg, 0, sizeof(DeviceDPTConfig));
@@ -525,11 +611,6 @@ void DefaultConfig(void)
     ign2_cfg->threshold_break_high = 1000;
     ign2_cfg->burn_retry_count     = 0u;
 }
-
-
-
-
-
 
 void ResetMCU(void)
 {
@@ -555,19 +636,34 @@ void CommandCB(uint8_t Dev, uint8_t Command, uint8_t *Parameters)
 {
     switch (Dev) {
     case 0: MCU_K1CommandCB(Command, Parameters); break;
-    case 1: g_dpt.CommandCB(Command, Parameters); break;
-    case 2: g_igniter1.CommandCB(Command, Parameters); break;
-    case 3: g_igniter2.CommandCB(Command, Parameters); break;
+    case 1:
+        if (App_IsSlotEnabled(0)) {
+            g_dpt.CommandCB(Command, Parameters);
+        }
+        break;
+    case 2:
+        if (App_IsIgniterSlotEnabled(1)) {
+            g_igniter1.CommandCB(Command, Parameters);
+        }
+        break;
+    case 3:
+        if (App_IsIgniterSlotEnabled(2)) {
+            g_igniter2.CommandCB(Command, Parameters);
+        }
+        break;
     default: break;
     }
+}
+
+void AplyConfig(void)
+{
+    App_RebuildBoardDevicesList();
+    App_StopDisabledChannels();
 }
 
 
 void App_Init(void)
 {
-    extern Device BoardDevicesList[];
-    extern uint8_t nDevs;
-
     if (!FlashReadConfig(&g_cfg)) {
         DefaultConfig();
         SaveConfig();
@@ -582,7 +678,6 @@ void App_Init(void)
     g_dpt.DPT_SetResMeasureMode = App_DPT_SetResMeasureMode;
     g_dpt.DPT_SetMaxMeasureMode = App_DPT_SetMaxMeasureMode;
     g_dpt.Init();
-    g_cfg.VDtype[0] = g_dpt.GetDT();
 
     g_igniter1.DeviceInit(&g_cfg.Devices[1]);
     g_igniter1.VDeviceSetStatus = VDeviceSetStatus;
@@ -594,40 +689,13 @@ void App_Init(void)
     g_igniter2.VDeviceSaveCfg   = SaveConfig;
     g_igniter2.Init();
 
-    nDevs = 1;
-    BoardDevicesList[0].zone   = g_cfg.UId.devId.zone;
-    BoardDevicesList[0].h_adr  = g_cfg.UId.devId.h_adr;
-    BoardDevicesList[0].l_adr  = g_cfg.UId.devId.l_adr;
-    BoardDevicesList[0].d_type = DEVICE_MCU_K1;
+    App_RebuildBoardDevicesList();
 
-    if (nDevs < MAX_DEVS) {
-        BoardDevicesList[nDevs].zone = g_cfg.UId.devId.zone;
-        BoardDevicesList[nDevs].h_adr = g_cfg.UId.devId.h_adr;
-        BoardDevicesList[nDevs].l_adr = 1; /* DPT-base (actual type from mode) */
-        BoardDevicesList[nDevs].d_type = g_dpt.GetDT();
-        nDevs++;
+    if (App_IsSlotEnabled(0)) {
+        App_DPT_SetResMeasureMode();
     }
-    if (nDevs < MAX_DEVS) {
-        BoardDevicesList[nDevs].zone = g_cfg.UId.devId.zone;
-        BoardDevicesList[nDevs].h_adr = g_cfg.UId.devId.h_adr;
-        BoardDevicesList[nDevs].l_adr = 2; /* Igniter1 */
-        BoardDevicesList[nDevs].d_type = DEVICE_IGNITER_TYPE;
-        nDevs++;
-    }
-    if (nDevs < MAX_DEVS) {
-        BoardDevicesList[nDevs].zone = g_cfg.UId.devId.zone;
-        BoardDevicesList[nDevs].h_adr = g_cfg.UId.devId.h_adr;
-        BoardDevicesList[nDevs].l_adr = 3; /* Igniter2 */
-        BoardDevicesList[nDevs].d_type = DEVICE_IGNITER_TYPE;
-        nDevs++;
-    }
-
-    App_DPT_SetResMeasureMode();
 
     isListener = true;
-
-
-
 
 }
 
@@ -637,9 +705,6 @@ void App_Timer1ms(void)
     static uint16_t status_cnt = 0u;
     static uint16_t tmax_cnt = 0u;
 
-
-    extern Device BoardDevicesList[];
-    BoardDevicesList[1].d_type = g_dpt.GetDT();
 
     if (status_cnt < 1000u) {
         status_cnt++;
@@ -656,63 +721,8 @@ void App_Timer1ms(void)
         led_cnt = 0u;
         HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
     }
-/*
-    if (g_fire_retry_active) {
-        if ((now - g_fire_last_send_ms) >= 200u) {
-            g_fire_last_send_ms = now;
-            SetStatusFire();
-        }
-    }
-*/
-
-    if (tmax_cnt < 100u) {
-        tmax_cnt++;
-    } else {
-
-    	MAXReadProcess();
-        tmax_cnt = 0u;
-    }
 
     App_UpdateCanActivity();
-
-    if (!g_igniter1.IsPwmActive()) {
-        uint16_t raw = ADC_GetIgniter1Filtered();
-        uint16_t mv = (uint16_t)((uint32_t)raw * 3300u / 4095u);
-        g_igniter1.UpdateLineFromAdcMv(mv);
-    }
-    if (!g_igniter2.IsPwmActive()) {
-        uint16_t raw = ADC_GetIgniter2Filtered();
-        uint16_t mv = (uint16_t)((uint32_t)raw * 3300u / 4095u);
-        g_igniter2.UpdateLineFromAdcMv(mv);
-    }
-
-    g_dpt.Timer1ms();
-
-    BackendProcess();
-
-    AppIgniter_RunSequentialScheduler(NUM_DEV_IN_MCU, HAL_GetTick(), g_extinguish_deadline_ms,
-                                      g_extinguish_armed, g_extinguish_paused,
-                                      App_IsIgniterSlot, App_IsIgniterBurnRunning,
-                                      App_FireIgniterSlot, nullptr);
-
-    g_igniter1.Timer1ms();
-    g_igniter2.Timer1ms();
-
-    uint16_t pwm1 = g_igniter1.GetPwm();
-    if (pwm1 > 0u) {
-        HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_4);
-        __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, pwm1);
-    } else {
-        HAL_TIM_PWM_Stop(&htim4, TIM_CHANNEL_4);
-    }
-
-    uint16_t pwm2 = g_igniter2.GetPwm();
-    if (pwm2 > 0u) {
-        HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, pwm2);
-    } else {
-        HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_2);
-    }
 
     // задержка софт-рестарта. нужно чтобы усройство успело широковещательную переслать команду дальше
     if(isReset) {
@@ -721,12 +731,77 @@ void App_Timer1ms(void)
     		NVIC_SystemReset();
     }
 
+    BackendProcess();
+
+//DPT
+    if (App_IsSlotEnabled(0)) {
+        if (tmax_cnt < 100u) {
+            tmax_cnt++;
+        } else {
+            MAXReadProcess();
+            tmax_cnt = 0u;
+        }
+        g_dpt.Timer1ms();
+    }
+//END DPT
+
+
+// INGNITER
+    if (App_IsIgniterSlotEnabled(1)) {
+        if (!g_igniter1.IsPwmActive()) {
+            uint16_t raw = ADC_GetIgniter1Filtered();
+            uint16_t mv = (uint16_t)((uint32_t)raw * 3300u / 4095u);
+            g_igniter1.UpdateLineFromAdcMv(mv);
+        }
+        g_igniter1.Timer1ms();
+
+        uint16_t pwm1 = g_igniter1.GetPwm();
+        if (pwm1 > 0u) {
+            HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_4);
+            __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, pwm1);
+        } else {
+            HAL_TIM_PWM_Stop(&htim4, TIM_CHANNEL_4);
+        }
+    } else {
+        HAL_TIM_PWM_Stop(&htim4, TIM_CHANNEL_4);
+    }
+
+    if (App_IsIgniterSlotEnabled(2)) {
+        if (!g_igniter2.IsPwmActive()) {
+            uint16_t raw = ADC_GetIgniter2Filtered();
+            uint16_t mv = (uint16_t)((uint32_t)raw * 3300u / 4095u);
+            g_igniter2.UpdateLineFromAdcMv(mv);
+        }
+        g_igniter2.Timer1ms();
+
+        uint16_t pwm2 = g_igniter2.GetPwm();
+        if (pwm2 > 0u) {
+            HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, pwm2);
+        } else {
+            HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_2);
+        }
+    } else {
+        HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_2);
+    }
+
+    AppIgniter_RunSequentialScheduler(NUM_DEV_IN_MCU, HAL_GetTick(), g_extinguish_deadline_ms,
+                                      g_extinguish_armed, g_extinguish_paused,
+                                      App_IsIgniterSlot, App_IsIgniterBurnRunning,
+                                      App_FireIgniterSlot, nullptr);
+// END INGNITER
+
+
 }
 
 
 
 void App_SetDPTAdcValues(uint16_t ch_l, uint16_t ch_h, uint16_t ch_u24)
 {
+    if (!App_IsSlotEnabled(0)) {
+        return;
+    }
+
     const uint32_t VREF_MV = 3300u;
     const uint32_t ADC_MAX = 4095u;
     const uint32_t R0_OHM  = 1925u;
