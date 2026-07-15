@@ -597,7 +597,7 @@ void DefaultConfig(void)
     dpt_cfg->mode                  = 0; //DeviceDPTMode_DPT
     dpt_cfg->use_max               = 1;
     dpt_cfg->max_fire_threshold_c  = 60;
-    dpt_cfg->state_change_delay_ms = 100;
+    dpt_cfg->state_change_delay_ms = 300;
 
     DeviceIgniterConfig *ign1_cfg = reinterpret_cast<DeviceIgniterConfig*>(g_cfg.Devices[1].reserv);
     ign1_cfg->disable_sc_check     = 0u;
