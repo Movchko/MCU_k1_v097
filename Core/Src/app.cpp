@@ -2,6 +2,7 @@
 
 extern "C" {
 #include "backend.h"
+#include "tick_time.h"
 }
 
 #include "device_config.h"
@@ -183,7 +184,7 @@ void MAXReadProcess() {
     		valid = 0;
 
 	/* После переключения реле в MAX-режим кратковременно подавляем данные термопары. */
-	if ((HAL_GetTick() - g_max_mode_switch_ms) < MAX31855_SWITCH_BLANK_MS) {
+	if (!TickAgeExpiredMs(HAL_GetTick(), g_max_mode_switch_ms, MAX31855_SWITCH_BLANK_MS)) {
 		valid = 0;
 	}
 
@@ -329,10 +330,16 @@ extern "C" void RcvStopExtinguishment(uint32_t MsgID, uint8_t *MsgData, uint8_t 
 
 void RcvReplyStatusFire(uint32_t MsgID,  uint8_t *MsgData, uint8_t bus)
 {
+	(void)bus;
 	can_ext_id_t id;
 	id.ID = MsgID;
-	if(id.field.zone == g_cfg.UId.devId.zone)
-		g_fire_retry_active = 0;
+	uint8_t our_zone = (uint8_t)(g_cfg.UId.devId.zone & 0x7Fu);
+	uint8_t id_zone = (uint8_t)(id.field.zone & 0x7Fu);
+	/* MsgData[0]=cmd, MsgData[1]=zone из payload (на случай старых ответов с zone=0 в ID). */
+	uint8_t pl_zone = (MsgData != nullptr) ? (uint8_t)(MsgData[1] & 0x7Fu) : 0u;
+	if (id_zone == our_zone || pl_zone == our_zone || id_zone == 0u) {
+		g_fire_retry_active = 0u;
+	}
 }
 
 
