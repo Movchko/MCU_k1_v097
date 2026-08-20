@@ -636,6 +636,7 @@ void MCU_K1CommandCB(uint8_t Command, uint8_t *Parameters) {
 	if(Command == 20) {
 		g_cfg.UId.devId.zone = Parameters[0];
 		SaveConfig();
+		AplyConfig();
 	}
 }
 
@@ -668,6 +669,11 @@ void AplyConfig(void)
     App_StopDisabledChannels();
 }
 
+static void App_SaveConfigAndApply(void)
+{
+    SaveConfig();
+    AplyConfig();
+}
 
 void App_Init(void)
 {
@@ -681,19 +687,19 @@ void App_Init(void)
 
     g_dpt.DeviceInit(&g_cfg.Devices[0]);
     g_dpt.VDeviceSetStatus = VDeviceSetStatus;
-    g_dpt.VDeviceSaveCfg   = SaveConfig;
+    g_dpt.VDeviceSaveCfg   = App_SaveConfigAndApply;
     g_dpt.DPT_SetResMeasureMode = App_DPT_SetResMeasureMode;
     g_dpt.DPT_SetMaxMeasureMode = App_DPT_SetMaxMeasureMode;
     g_dpt.Init();
 
     g_igniter1.DeviceInit(&g_cfg.Devices[1]);
     g_igniter1.VDeviceSetStatus = VDeviceSetStatus;
-    g_igniter1.VDeviceSaveCfg   = SaveConfig;
+    g_igniter1.VDeviceSaveCfg   = App_SaveConfigAndApply;
     g_igniter1.Init();
 
     g_igniter2.DeviceInit(&g_cfg.Devices[2]);
     g_igniter2.VDeviceSetStatus = VDeviceSetStatus;
-    g_igniter2.VDeviceSaveCfg   = SaveConfig;
+    g_igniter2.VDeviceSaveCfg   = App_SaveConfigAndApply;
     g_igniter2.Init();
 
     App_RebuildBoardDevicesList();
