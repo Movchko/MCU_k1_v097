@@ -414,22 +414,19 @@ extern "C" void RcvPauseExtinguishmentTimer(uint32_t MsgID, uint8_t *MsgData, ui
 	if (ign_slot < 0) {
 		return;
 	}
-	if (!g_extinguish_armed[(uint8_t)ign_slot]) {
-		return;
-	}
 
-	if (!g_extinguish_paused[(uint8_t)ign_slot]) {
+	uint8_t slot = (uint8_t)ign_slot;
+	/* ACK всегда: иначе ППКУ ретраит Pause ~10 с и может догнать уже armed-канал. */
+	if (g_extinguish_armed[slot] && !g_extinguish_paused[slot]) {
 		uint32_t now = HAL_GetTick();
-		if ((int32_t)(g_extinguish_deadline_ms[(uint8_t)ign_slot] - now) > 0) {
-			g_extinguish_remaining_ms[(uint8_t)ign_slot] =
-				g_extinguish_deadline_ms[(uint8_t)ign_slot] - now;
-		} else {
-			g_extinguish_remaining_ms[(uint8_t)ign_slot] = 0u;
+		if ((int32_t)(g_extinguish_deadline_ms[slot] - now) > 0) {
+			g_extinguish_remaining_ms[slot] = g_extinguish_deadline_ms[slot] - now;
+			g_extinguish_paused[slot] = 1u;
 		}
-		g_extinguish_paused[(uint8_t)ign_slot] = 1u;
+		/* Дедлайн уже прошёл: канал ждёт освобождения соседа — паузу не ставим. */
 	}
 
-	SetReplyPauseExtinguishmentTimer((uint8_t)(ign_slot + 1));
+	SetReplyPauseExtinguishmentTimer((uint8_t)(slot + 1));
 }
 
 extern "C" void RcvResumeExtinguishmentTimer(uint32_t MsgID, uint8_t *MsgData, uint8_t is_mine)
@@ -443,17 +440,15 @@ extern "C" void RcvResumeExtinguishmentTimer(uint32_t MsgID, uint8_t *MsgData, u
 	if (ign_slot < 0) {
 		return;
 	}
-	if (!g_extinguish_armed[(uint8_t)ign_slot]) {
-		return;
-	}
 
-	if (g_extinguish_paused[(uint8_t)ign_slot]) {
+	uint8_t slot = (uint8_t)ign_slot;
+	if (g_extinguish_armed[slot] && g_extinguish_paused[slot]) {
 		uint32_t now = HAL_GetTick();
-		g_extinguish_deadline_ms[(uint8_t)ign_slot] = now + g_extinguish_remaining_ms[(uint8_t)ign_slot];
-		g_extinguish_paused[(uint8_t)ign_slot] = 0u;
+		g_extinguish_deadline_ms[slot] = now + g_extinguish_remaining_ms[slot];
+		g_extinguish_paused[slot] = 0u;
 	}
 
-	SetReplyResumeExtinguishmentTimer((uint8_t)(ign_slot + 1));
+	SetReplyResumeExtinguishmentTimer((uint8_t)(slot + 1));
 }
 
 static void App_DPT_SetResMeasureMode(void)
