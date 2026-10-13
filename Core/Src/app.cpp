@@ -606,12 +606,16 @@ void DefaultConfig(void)
     ign1_cfg->threshold_break_low  = 100;
     ign1_cfg->threshold_break_high = 1000;
     ign1_cfg->burn_retry_count     = 0u;
+    ign1_cfg->burn_ramp_ms         = 10u;
+    ign1_cfg->burn_hold_ms         = 20u;
 
     DeviceIgniterConfig *ign2_cfg = reinterpret_cast<DeviceIgniterConfig*>(g_cfg.Devices[2].reserv);
     ign2_cfg->disable_sc_check     = 0u;
     ign2_cfg->threshold_break_low  = 100;
     ign2_cfg->threshold_break_high = 1000;
     ign2_cfg->burn_retry_count     = 0u;
+    ign2_cfg->burn_ramp_ms         = 10u;
+    ign2_cfg->burn_hold_ms         = 20u;
 }
 
 void ResetMCU(void)
