@@ -600,23 +600,23 @@ void DefaultConfig(void)
     dpt_cfg->use_max               = 1;
     dpt_cfg->max_fire_threshold_c  = 60;
     dpt_cfg->state_change_delay_ms = 300;
-    dpt_cfg->limit_break           = 6200;
-    dpt_cfg->limit_normal          = 4100;
-    dpt_cfg->limit_fault           = 160;
-    dpt_cfg->limit_fire            = 100;
+    dpt_cfg->limit_break           = DPT_LIMIT_BREAK;
+    dpt_cfg->limit_normal          = DPT_LIMIT_NORMAL;
+    dpt_cfg->limit_fault           = DPT_LIMIT_FAULT;
+    dpt_cfg->limit_fire            = DPT_LIMIT_FIRE;
 
     DeviceIgniterConfig *ign1_cfg = reinterpret_cast<DeviceIgniterConfig*>(g_cfg.Devices[1].reserv);
     ign1_cfg->disable_sc_check     = 0u;
-    ign1_cfg->threshold_break_low  = 1000;
-    ign1_cfg->threshold_break_high = 6200;
+    ign1_cfg->threshold_break_low  = IGNITER_TH_LOW_DEFAULT;
+    ign1_cfg->threshold_break_high = IGNITER_TH_HIGH_DEFAULT;
     ign1_cfg->burn_retry_count     = 0u;
     ign1_cfg->burn_ramp_ms         = 10u;
     ign1_cfg->burn_hold_ms         = 20u;
 
     DeviceIgniterConfig *ign2_cfg = reinterpret_cast<DeviceIgniterConfig*>(g_cfg.Devices[2].reserv);
     ign2_cfg->disable_sc_check     = 0u;
-    ign2_cfg->threshold_break_low  = 1000;
-    ign2_cfg->threshold_break_high = 6200;
+    ign2_cfg->threshold_break_low  = IGNITER_TH_LOW_DEFAULT;
+    ign2_cfg->threshold_break_high = IGNITER_TH_HIGH_DEFAULT;
     ign2_cfg->burn_retry_count     = 0u;
     ign2_cfg->burn_ramp_ms         = 10u;
     ign2_cfg->burn_hold_ms         = 20u;
