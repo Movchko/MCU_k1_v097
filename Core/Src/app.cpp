@@ -600,19 +600,23 @@ void DefaultConfig(void)
     dpt_cfg->use_max               = 1;
     dpt_cfg->max_fire_threshold_c  = 60;
     dpt_cfg->state_change_delay_ms = 300;
+    dpt_cfg->limit_break           = 6200;
+    dpt_cfg->limit_normal          = 4100;
+    dpt_cfg->limit_fault           = 160;
+    dpt_cfg->limit_fire            = 100;
 
     DeviceIgniterConfig *ign1_cfg = reinterpret_cast<DeviceIgniterConfig*>(g_cfg.Devices[1].reserv);
     ign1_cfg->disable_sc_check     = 0u;
-    ign1_cfg->threshold_break_low  = 100;
-    ign1_cfg->threshold_break_high = 1000;
+    ign1_cfg->threshold_break_low  = 1000;
+    ign1_cfg->threshold_break_high = 6200;
     ign1_cfg->burn_retry_count     = 0u;
     ign1_cfg->burn_ramp_ms         = 10u;
     ign1_cfg->burn_hold_ms         = 20u;
 
     DeviceIgniterConfig *ign2_cfg = reinterpret_cast<DeviceIgniterConfig*>(g_cfg.Devices[2].reserv);
     ign2_cfg->disable_sc_check     = 0u;
-    ign2_cfg->threshold_break_low  = 100;
-    ign2_cfg->threshold_break_high = 1000;
+    ign2_cfg->threshold_break_low  = 1000;
+    ign2_cfg->threshold_break_high = 6200;
     ign2_cfg->burn_retry_count     = 0u;
     ign2_cfg->burn_ramp_ms         = 10u;
     ign2_cfg->burn_hold_ms         = 20u;
@@ -711,6 +715,22 @@ void App_Init(void)
 
 }
 
+/* Ом = (6743 * код_канала - 1060625) / 1000.
+ * Минимакс по точкам 875->5к, 759->4к, 626->3к, 469->2к, 282->1к.
+ * На этих точках ошибка не больше 160 Ом. */
+static uint16_t IgniterChannelToOhm(uint16_t channel)
+{
+	int32_t num = (int32_t)channel * 6743 - 1060625;
+	if (num < 0) {
+		return 0u;
+	}
+	num = (num + 500) / 1000;
+	if (num > 65535) {
+		num = 65535;
+	}
+	return (uint16_t)num;
+}
+
 void App_Timer1ms(void)
 {
     static uint16_t led_cnt = 0u;
@@ -762,8 +782,7 @@ void App_Timer1ms(void)
     if (App_IsIgniterSlotEnabled(1)) {
         if (!g_igniter1.IsPwmActive()) {
             uint16_t raw = ADC_GetIgniter1Filtered();
-            uint16_t mv = (uint16_t)((uint32_t)raw * 3300u / 4095u);
-            g_igniter1.UpdateLineFromAdcMv(mv);
+            g_igniter1.UpdateLineFromAdc(IgniterChannelToOhm(raw));
         }
         g_igniter1.Timer1ms();
 
@@ -781,8 +800,7 @@ void App_Timer1ms(void)
     if (App_IsIgniterSlotEnabled(2)) {
         if (!g_igniter2.IsPwmActive()) {
             uint16_t raw = ADC_GetIgniter2Filtered();
-            uint16_t mv = (uint16_t)((uint32_t)raw * 3300u / 4095u);
-            g_igniter2.UpdateLineFromAdcMv(mv);
+            g_igniter2.UpdateLineFromAdc(IgniterChannelToOhm(raw));
         }
         g_igniter2.Timer1ms();
 
@@ -808,46 +826,50 @@ void App_Timer1ms(void)
 
 
 
+/* Rлинии = 1925 * (Uh - Ul) / Ul, напряжения после делителя.
+ * Питание зафиксировано 5 В, поэтому k = 327/1000 — константа.
+ * Подгонка (15*r - 1000)/4 слита с этим k:
+ *   Ом = 4905/4000 * Rлинии - 250.
+ * Точки старой шкалы 1400, 1100, 900, 600, 300 дают
+ * 4998, 3873, 3123, 1998, 873 Ом (не больше 2 Ом от раздельного пересчёта). */
+static uint16_t DptAdcToOhm(uint16_t ch_l, uint16_t ch_h)
+{
+    uint32_t vl = (uint32_t)ch_l * 3300u / 4095u * 2u;
+    uint32_t vh = (uint32_t)ch_h * 3300u / 4095u * 2u;
+    if (vl == 0u) {
+        vl = 1u;
+    }
+    if (vh <= vl) {
+        return 0u;
+    }
+
+    uint32_t r_line = 1925u * (vh - vl) / vl;
+#if UNIQ_DEBUG
+    uint32_t r = (r_line * 327u + 500u) / 1000u / 3u;
+    if (r > 65535u) {
+        r = 65535u;
+    }
+    int64_t ohm = ((int64_t)r * 15 - 1000) / 4;
+#else
+    int64_t ohm = ((int64_t)r_line * 4905 - 1000000) / 4000;
+#endif
+    if (ohm < 0) {
+        return 0u;
+    }
+    if (ohm > 65535) {
+        return 65535u;
+    }
+    return (uint16_t)ohm;
+}
+
 void App_SetDPTAdcValues(uint16_t ch_l, uint16_t ch_h, uint16_t ch_u24)
 {
+    (void)ch_u24;
     if (!App_IsSlotEnabled(0)) {
         return;
     }
 
-    const uint32_t VREF_MV = 3300u;
-    const uint32_t ADC_MAX = 4095u;
-    const uint32_t R0_OHM  = 1925u;
-    const uint32_t DIV_K   = 2;
-
-    uint32_t v_adc_l_mv = (uint32_t)ch_l * VREF_MV / ADC_MAX;
-    uint32_t v_adc_h_mv = (uint32_t)ch_h * VREF_MV / ADC_MAX;
-    uint32_t v_adc_u_mv = 5000;//(uint32_t)ch_u24 * VREF_MV / ADC_MAX;
-
-    uint32_t v_line_l_mv = v_adc_l_mv * DIV_K;
-    uint32_t v_line_h_mv = v_adc_h_mv * DIV_K;
-    uint32_t u24_mv      = v_adc_u_mv * DIV_K;//v_adc_u_mv * DIV_K; // мы всегда в этой версии и далее подаём 5В.
-
-    if (v_line_l_mv == 0u) {
-        v_line_l_mv = 1u;
-    }
-
-    uint32_t r_line_ohm = 0u;
-    if (v_line_h_mv > v_line_l_mv) {
-        r_line_ohm = R0_OHM * (v_line_h_mv - v_line_l_mv) / v_line_l_mv;
-    }
-
-    int32_t k_scaled = -346;
-    k_scaled += (int32_t)(673u * (u24_mv / 10u)) / 1000;
-    if (k_scaled < 300)  k_scaled = 300;
-    if (k_scaled > 1500) k_scaled = 1500;
-
-    uint32_t r_corr = (uint32_t)((r_line_ohm * (uint32_t)k_scaled + 500u) / 1000u);
-
-#if UNIQ_DEBUG
-    r_corr = r_corr / 3;
-#endif
-
-    g_dpt.SetAdcValues((uint16_t)r_corr, 0);
+    g_dpt.SetAdcValues(DptAdcToOhm(ch_l, ch_h), 0);
 }
 
 } /* extern "C" */
